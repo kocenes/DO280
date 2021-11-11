@@ -1,0 +1,364 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-test - test lab script for DO280-OCP4 shlib functions
+#
+# CHANGELOG
+#   * Fri Apr 26 2019 Fernando Lozano <flozano@redhat.com>
+#   - original code, not sure I wanna keep a changelog for this
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
+
+# add each new test function here as a verb which is the function name without the 'ocp4_' prefix
+declare -a valid_commands=( all check_http_status check_image_exists check_git_repo_exists is_latest_build_successful isnt_latest_build_successful is_pod_ready_and_running isnt_pod_ready_and_running)
+
+# Change these variables to match your exercise
+this='test'
+title='test shlib functions'
+
+# Do not change these variables
+target='workstation'
+run_as_root='true'
+
+
+function lab_all {
+  for func in ${valid_commands[@]}; do
+    if [ "${func}" != "all" ]; then
+      print_line " Testing function ocp4_${func}"
+      lab_${func}
+    fi
+  done
+}
+
+
+# Each test function replaces the 'ocp4' prefix with 'lab' so it becomes a lab script verb
+
+
+function lab_check_http_status {
+
+  ocp4_pad 'Materials web server returns 200'
+  if ocp4_check_http_status 200 "${materials}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  ocp4_pad 'Inexistent file on materials web server returns 404'
+  if ocp4_check_http_status 404 "${materials}/nothere"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # this is expected to fail
+  ocp4_pad 'Inexistent file on materials web server does NOT return 200'
+  if ocp4_check_http_status 200 "${materials}/nothere"
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  # this is expected to fail
+  ocp4_pad 'Inexistent host name does NOT return 200'
+  if ocp4_check_http_status 200 "http://nowhere.example.com/"
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+}
+
+
+function lab_check_image_exists {
+
+  #XXX This test requires that the rhel7:7.6 and rhel7:latest images exists in the services registry
+
+  ocp4_pad 'Image name without tag'
+  if ocp4_check_image_exists 'rhel7'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  ocp4_pad 'Image name with a tag'
+  if ocp4_check_image_exists 'rhel7:7.6'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # registry.domain is an alias to services.domain
+  ocp4_pad 'Optional registry name'
+  if ocp4_check_image_exists 'rhel7:7.6' "${RHT_OCP4_SERVICES_VM}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # this is expected to fail
+  ocp4_pad 'Image does not exist'
+  if ocp4_check_image_exists 'notthere'
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  # this is expected to fail
+  ocp4_pad 'Image exists but not the tag'
+  if ocp4_check_image_exists 'rhel7:1.2'
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  # this is expected to fail
+  ocp4_pad 'Invalid optional registry name'
+  if ocp4_check_image_exists 'rhel7:7.6' 'nowhere.example.com'
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+}
+
+
+function lab_check_git_repo_exists {
+
+  #XXX This test requires that the php-helloworld repository exists in the services git server
+
+  ocp4_pad 'Repo that exists'
+  if ocp4_check_git_repo_exists 'php-helloworld'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # registry.domain is an alias to services.domain
+  ocp4_pad 'Optional gitweb server name'
+  if ocp4_check_git_repo_exists 'php-helloworld' "${RHT_OCP4_PRIV_REGISTRY}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # this is expected to fail
+  ocp4_pad 'Repo that does not exist'
+  if ocp4_check_git_repo_exists 'notthere'
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+}
+
+
+#XXX preparing and cleaning up the environment for such test is tricky...
+#XXX be prepared for manual troubleshooting and cleanup when it fails
+#XXX it may not be a bug with the function under test :-(
+
+function lab_is_latest_build_successful {
+
+  ocp4_pad 'Prepare test project and app'
+  if ocp4_login_as_admin && oc new-project 'lab-test' && \
+    oc new-app --name test http://${RHT_OCP4_SERVICES_VM}/php-helloworld
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  
+  ocp4_exit_on_failure
+
+  #XXX hope this is sufficient to wait for the build to start and finish
+  ocp4_pad 'Wait for test build to finish'
+  sleep 3
+  while ! oc get build 'test-1'; do
+    sleep 1
+  done
+  sleep 3
+  if oc logs -f bc/test
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  # This is the actual test
+  ocp4_pad 'Build an app that should be fine'
+  if ocp4_is_latest_build_successful 'lab-test' 'test'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  ocp4_pad 'Clean up test project and app'
+  if oc delete project 'lab-test' --wait
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+}
+
+
+function lab_isnt_latest_build_successful {
+
+  ocp4_pad 'Prepare test project and app'
+  # using a project that is guaranteed to fail to build
+  if ocp4_login_as_admin && oc new-project 'lab-test' && \
+    oc new-app --name test http://${RHT_OCP4_SERVICES_VM}/php-broken
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  
+  ocp4_exit_on_failure
+
+  #XXX hope this is sufficient to wait for the build to start and finish
+  ocp4_pad 'Wait for test build to finish'
+  sleep 3
+  while ! oc get build 'test-1'; do
+    sleep 1
+  done
+  sleep 3
+  if oc logs -f bc/test
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  # This is the actual test
+  ocp4_pad 'Build an app that should be fine'
+  if ! ocp4_is_latest_build_successful 'lab-test' 'test'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  ocp4_pad 'Clean up test project and app'
+  if oc delete project 'lab-test' --wait
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+}
+
+
+function lab_is_pod_ready_and_running {
+
+  ocp4_pad 'Prepare test project and app'
+  if ocp4_login_as_admin && oc new-project 'lab-test' && \
+     oc new-app --name test --docker-image ${RHT_OCP4_PRIV_REGISTRY}/rhscl/httpd-24-rhel7
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  
+  ocp4_exit_on_failure
+
+  #XXX hope this is sufficient to wait for the pod to be ready and running
+  ocp4_pad 'Wait for test pod to be running'
+  sleep 3
+  #   oc wait --for condition=ContainersReady -l deploymentconfig=test pod
+  if oc wait --for condition=Available dc test
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  # This is the actual test
+  ocp4_pad 'Test pod is ready and running'
+  if ocp4_is_pod_ready_and_running 'lab-test' 'test'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  ocp4_pad 'Clean up test project and app'
+  if oc delete project 'lab-test' --wait
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+}
+
+
+function lab_isnt_pod_ready_and_running {
+
+  ocp4_pad 'Prepare test project and app'
+  if ocp4_login_as_admin && oc new-project 'lab-test' && \
+     oc new-app --name test --docker-image ${RHT_OCP4_PRIV_REGISTRY}/rhscl/httpd-24-rhel7
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  
+  ocp4_exit_on_failure
+
+  #XXX hope this is sufficient to wait for the pod to be ready and running
+  ocp4_pad 'Wait for test pod to be running'
+  sleep 3
+  #   oc wait --for condition=ContainersReady -l deploymentconfig=test pod
+  if oc wait --for condition=Available dc test
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  ocp4_pad 'Scale test dc to zero to be running'
+  if oc scale dc/test --replicas=0
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  sleep 3
+
+  # This is expected to fail
+  ocp4_pad 'Test pod is not ready and running'
+  if ocp4_is_pod_ready_and_running 'lab-test' 'test'
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  ocp4_pad 'Clean up test project and app'
+  if oc delete project 'lab-test' --wait
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+}
+
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/labtool.do280.shlib
+
+grading_main_program "$@"

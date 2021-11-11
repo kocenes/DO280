@@ -1,0 +1,155 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-example-do280 - sample lab script for DO280-OCP4
+#                   [ Put title of the exercise here ]
+#
+# SYNOPSIS
+#     lab-example-do280 {start|finish}
+#
+#        start  - prepare the system for starting the lab
+#        finish - perform post-lab finish
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or finish for
+#     the [name of the exercise]
+#
+# CHANGELOG
+#   [ replace your name, email, and date ]
+#   * Fri Sep 11 2020 Michael Phillips <miphilli@redhat.com>
+#   - renamed file from example to example-do280 to avoid conflicts when combined in DO285
+#   * Fri Apr 05 2019 Fernando Lozano <flozano@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Usually GEs do not have a grade verb
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+# Change these variables to match your exercise
+this='example-do280'
+title='Example Lab Script'
+
+# Do not change these variables
+target='workstation'
+run_as_root='true'
+
+
+# think about reusability and avoid name collisions (this is Bash, not your preferred programming language)
+
+function do280_my_function {
+  local arg="$1"
+
+  # stdout and stdin are redirected to /var/tmp/labs/example-do280
+  echo "my_function got argument: $arg"
+  true
+}
+
+
+# your start verb does two things:
+# 1. check pre-requisites
+# 2. prepare the environment for the exercise
+# group them all for the benefit of the student
+
+function lab_start {
+  
+  ocp4_print_prereq_header
+  
+  # unlike most OCP classrooms, DO280 doesn't start with the oc client installed
+
+  ocp4_is_cluster_up
+  ocp4_login_as_admin
+
+  # you do not need to use print_line this way, but it helps readability when there are too many pad
+  print_line ' Checking something'
+
+  pad ' · Check that oc version is >= 4'
+  # most oc verbs accept -o jsonpath='{...}' but when they do not, yq and jq are your friends
+  local version=$(oc version -o yaml | yq -r .clientVersion.major)
+  # when you need debugging output, just echo it and check /var/tmp/labs/example-do280
+  echo "*** version: ${version}"
+  if [ "${version}" -ge 4 ]; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  pad ' · Check again that oc version is >= 4'
+  # most oc verbs accept -o jsonpath='{...}' but when they d not, yq and jq are your friends
+  local version=$(oc version -o json | jq -r .clientVersion.major)
+  if [ "${version}" -ge 4 ]; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  # avoid conflicts with left overs from previous exeercises
+  ocp4_fail_if_project_exists "${this}"
+
+  ocp4_exit_on_failure
+  ocp4_print_setup_header
+
+  ocp4_grab_lab_files 'no-solution'
+
+  print_line ' Doing something'
+
+  # ocp_pad2 prefixes the message with ' · ' and wraps lines if it is too wide
+  ocp4_pad "Create project ${this}"
+  if oc new-project "${this}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  # pad requires you to add ' · ' and make sure output is not too wide
+  pad " · Create configmap"
+  if oc create -f "${labs}/${this}/configmap.yaml"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Call function"
+  if do280_my_function
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  ocp4_print_setup_footer
+}
+
+
+function lab_finish {
+
+  ocp4_print_cleanup_header
+
+  # remember to login before doing anything else
+  ocp4_login_as_admin
+
+  #XXX according to Jim, this function may not be needed anymore
+  ocp4_delete_project "${this}"
+
+  # you may need your lab and solution files to do cleanup
+  ocp4_cleanup_lab_files 'no-solution'
+
+  ocp4_print_cleanup_footer
+}
+
+
+#TODO add a grade verb example-do280
+
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/labtool.do280.shlib
+
+grading_main_program "$@"

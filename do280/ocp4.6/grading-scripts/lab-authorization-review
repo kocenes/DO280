@@ -1,0 +1,301 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-authorization-review - lab script for DO280-OCP4
+#                          Controlling Access to OpenShift Resources
+#
+# SYNOPSIS
+#     lab-authorization-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab finish
+#        grading - perform grading for the lab
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or finish for
+#     the [name of the exercise]
+#
+# CHANGELOG
+#   * Mon Oct 26 2020 Michael Phillips <miphilli@redhat.com>
+#   - adjustments to the grading function
+#   * Thu Aug 20 2020 Michael Phillips <miphilli@redhat.com>
+#   - added the ocp4_login_as_admin function to the lab_start function
+#   - Significant rework of grading function to match grading in comprehensive review
+#   * Mon Aug 03 2020 Michael Phillips <miphilli@redhat.com>
+#   - Reworked grading to accept either deployments or deployment configs for
+#     the mysql and wordpress applications. OCP 4.5 defaults to creating
+#     deployments for applications instead of deployment configs.
+#   * Fri Dec 04 2019 Iván Chavero <ichavero@redhat.com>
+#   - initial creation
+
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:/root/bin:/usr/local/bin
+declare -a valid_commands=(start finish grade)
+
+# Change these variables to match your exercise
+this='authorization-review'
+title='Lab: Configuring Application Security'
+
+# Do not change these variables
+target='workstation'
+run_as_root='true'
+
+# Grading/Finish variables
+SOLUTION_URL_WP="wordpress-review.apps.ocp4.example.com"
+SCC_SHORT="anyuid"
+SCC="system:openshift:scc:${SCC_SHORT}"
+SCC_BINDING="clusterrolebinding.rbac.authorization.k8s.io/${SCC}"
+SERVICE_ACCOUNT="wordpress-sa"
+
+
+function lab_start {
+
+  ocp4_print_prereq_header
+
+  ocp4_is_cluster_up
+  ocp4_login_as_admin
+  opc4_restart_package_server_if_required
+  ocp4_fail_if_project_exists "${this}"
+  ocp4_exit_on_failure "It looks like you have already started this exercise. To try this exercise again, run 'lab ${this} finish' followed by 'lab ${this} start'."
+
+  ocp4_print_setup_header
+
+  ocp4_add_standard_users
+  ocp4_add_self_provisioing
+
+  #Remove the anyuid SCC cluster role binding if necessary
+  if oc get ${SCC_BINDING}
+  then
+    pad2 "Removing the 'anyuid' SCC cluster role binding"
+    if oc delete ${SCC_BINDING}
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  ocp4_print_setup_footer
+}
+
+
+function lab_grade {
+
+  ocp4_print_grade_header
+
+  print_line " Verifying the information collected about the cluster:"
+
+  ocp4_login_as_admin
+
+  #Verify that the authorization-review project exists
+  pad2 "The '${this}' project exists"
+  if ! oc project ${this}
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify that the review-secret exists
+  pad2 "The 'review-secret' secret exists"
+  if ! oc get secret review-secret -n ${this}
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify that the mysql application exists
+  pad2 "The 'mysql' application exists"
+  if oc get dc/mysql -n ${this}
+  then
+    local APP_MYSQL="$(oc get dc/mysql -o name -n ${this})"
+    print_PASS
+  elif oc get deployment/mysql -n ${this}
+  then
+    local APP_MYSQL="$(oc get deployment/mysql -o name -n ${this})"
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify that the review-secret secret was used to initialize the mysql environment variables
+  pad2 "The 'MYSQL_USER' environment variable is set from the 'review-secret' secret"
+  if [ $(oc get ${APP_MYSQL} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="mysql")].env[?(@.name=="MYSQL_USER")].valueFrom.secretKeyRef.name}') == "review-secret" -a $(oc get ${APP_MYSQL} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="mysql")].env[?(@.name=="MYSQL_USER")].valueFrom.secretKeyRef.key}') == "user" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad2 "The 'MYSQL_PASSWORD' environment variable is set from the 'review-secret' secret"
+  if [ $(oc get ${APP_MYSQL} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="mysql")].env[?(@.name=="MYSQL_PASSWORD")].valueFrom.secretKeyRef.name}') == "review-secret" -a $(oc get ${APP_MYSQL} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="mysql")].env[?(@.name=="MYSQL_PASSWORD")].valueFrom.secretKeyRef.key}') == "password" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad2 "The 'MYSQL_DATABASE' environment variable is set from the 'review-secret' secret"
+  if [ $(oc get ${APP_MYSQL} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="mysql")].env[?(@.name=="MYSQL_DATABASE")].valueFrom.secretKeyRef.name}') == "review-secret" -a $(oc get ${APP_MYSQL} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="mysql")].env[?(@.name=="MYSQL_DATABASE")].valueFrom.secretKeyRef.key}') == "database" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify that the wordpress application exists
+  pad2 "The 'wordpress' application exists"
+  if oc get dc/wordpress
+  then
+    local APP_WORDPRESS="$(oc get dc/wordpress -o name -n ${this})"
+    local POD_WORDPRESS="$(oc get pods -l deploymentconfig=wordpress -n ${this} -o template --template '{{range .items}}{{.metadata.name}}{{end}}')"
+    print_PASS
+  elif oc get deployment/wordpress
+  then
+    local APP_WORDPRESS="$(oc get deployment/wordpress -o name -n ${this})"
+    local POD_WORDPRESS="$(oc get pods -l deployment=wordpress -n ${this} -o template --template '{{range .items}}{{.metadata.name}}{{end}}')"
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify that the review-secret secret was used to initialize the wordpress environment variables
+  pad2 "The 'WORDPRESS_DB_USER' environment variable is set from the 'review-secret' secret"
+  if [ $(oc get ${APP_WORDPRESS} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="wordpress")].env[?(@.name=="WORDPRESS_DB_USER")].valueFrom.secretKeyRef.name}') == "review-secret" -a $(oc get ${APP_WORDPRESS} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="wordpress")].env[?(@.name=="WORDPRESS_DB_USER")].valueFrom.secretKeyRef.key}') == "user" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad2 "The 'WORDPRESS_DB_PASSWORD' environment variable is set from the 'review-secret' secret"
+  if [ $(oc get ${APP_WORDPRESS} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="wordpress")].env[?(@.name=="WORDPRESS_DB_PASSWORD")].valueFrom.secretKeyRef.name}') == "review-secret" -a $(oc get ${APP_WORDPRESS} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="wordpress")].env[?(@.name=="WORDPRESS_DB_PASSWORD")].valueFrom.secretKeyRef.key}') == "password" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad2 "The 'WORDPRESS_DB_DATABASE' environment variable is set from the 'review-secret' secret"
+  if [ $(oc get ${APP_WORDPRESS} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="wordpress")].env[?(@.name=="WORDPRESS_DB_DATABASE")].valueFrom.secretKeyRef.name}') == "review-secret" -a $(oc get ${APP_WORDPRESS} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="wordpress")].env[?(@.name=="WORDPRESS_DB_DATABASE")].valueFrom.secretKeyRef.key}') == "database" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'wordpress-sa' service account exists
+  pad2 "The 'wordpress-sa' service account exists"
+  if oc get sa/wordpress-sa -n ${this}
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'wordpress-sa' service account uses the 'anyuid' SCC
+  pad2 "The 'wordpress-sa' service account uses the 'anyuid' SCC"
+  if [ "$(oc get ${SCC_BINDING} -o jsonpath='{.roleRef.name}::{.subjects[?(@.kind=="ServiceAccount")].name}::{.subjects[?(@.kind=="ServiceAccount")].namespace}')" == "${SCC}::${SERVICE_ACCOUNT}::${this}" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'wordpress' application uses the 'wordpress-sa' service account
+  pad2 "The 'wordpress' application uses the 'wordpress-sa' service account"
+  if [ "$(oc get ${APP_WORDPRESS} -n ${this} -o jsonpath='{.spec.template.spec.serviceAccountName}')" == "wordpress-sa" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'wordpress' applications runs as anyuid
+  pad2 "The 'wordpress' application uses the 'anyuid' SCC"
+  if oc describe pod ${POD_WORDPRESS} -n ${this} | grep "openshift.io/scc: anyuid"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the correct route exists for the 'wordpress' application
+  pad2 "The 'wordpress' deployment is exposed at '${SOLUTION_URL_WP}'"
+  # Identify the service used for the 'wordpress' application
+  for SVC in $(oc get svc -o name -n ${this})
+  do
+    if [ "$(oc get ${SVC} -n ${this} -o jsonpath='{.spec.selector.deployment}')" == "wordpress" ]
+    then
+      local SVC_WP="$(oc get ${SVC} -n ${this} -o jsonpath='{.metadata.name}')"
+      break
+    elif [ "$(oc get ${SVC} -n ${this} -o jsonpath='{.spec.selector.deploymentconfig}')" == "wordpress" ]
+    then
+      local SVC_WP="$(oc get ${SVC} -n ${this} -o jsonpath='{.metadata.name}')"
+      break
+    fi
+  done
+  for ROUTE in $(oc get routes -o name -n ${this})
+  do
+    if [ "$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.to.name}')" == "${SVC_WP}" ]
+    then
+      local URL_WP="$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.host}')"
+      break
+    fi
+  done
+  if [ -n "${URL_WP}" ]
+  then
+    if [ "${URL_WP}" == "${SOLUTION_URL_WP}" ]
+    then
+      print_PASS
+      #Verify the route for the 'wordpress' application responds to externl requests
+      pad2 "The '${SOLUTION_URL_WP}' URL responds to external requests"
+      if curl -s http://${URL_WP}/wp-admin/install.php | grep 'Installation'
+      then
+        print_PASS
+      else
+        print_FAIL
+      fi
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  ocp4_print_grade_footer
+}
+
+function lab_finish {
+
+  ocp4_print_cleanup_header
+
+  ocp4_login_as_admin
+  ocp4_delete_project "${this}"
+
+  #Remove the anyuid SCC cluster role binding if necessary
+  if oc get ${SCC_BINDING}
+  then
+    pad2 "Removing the 'anyuid' SCC cluster role binding"
+    if oc delete ${SCC_BINDING}
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  ocp4_print_cleanup_footer
+}
+
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/labtool.do280.shlib
+
+grading_main_program "$@"

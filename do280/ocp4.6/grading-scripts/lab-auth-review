@@ -1,0 +1,395 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-auth-review - lab script for DO280-OCP4 Configuring Authentication and Authorization
+#                          
+#
+# SYNOPSIS
+#     lab-execute-review {start|grade|finish}
+#
+#        start  - prepare the system for starting the lab
+#        finish - perform post-lab finish
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or finish for
+#     the [name of the exercise]
+#
+# CHANGELOG
+#   * Mon Sep 21 2020 Michael Phillips <miphilli@redhat.com>
+#   - Added RBAC content from ch04 review based on chapter reorganization.
+#   * Thu Aug 20 2020 Michael Phillips <miphilli@redhat.com>
+#   - added the ocp4_login_as_admin function to the lab_start function
+#   * Wed Oct 7 2019 Michael Jarrett <mjarrett@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/root/bin:/usr/local/bin
+declare -a valid_commands=(start grade finish)
+
+# Change these variables to match your exercise
+this='auth-review'
+title='Lab: Configuring Authentication and Authorization'
+
+# Do not change these variables
+target='workstation'
+run_as_root='true'
+
+
+function lab_start {
+
+  ocp4_print_prereq_header
+
+  ocp4_is_cluster_up
+  ocp4_login_as_admin
+  opc4_restart_package_server_if_required
+  ocp4_fail_if_project_exists "${this}"
+  ocp4_exit_on_failure
+
+  ocp4_print_setup_header
+
+  print_line " Preparing the student's workstation:"
+  ocp4_grab_lab_files
+
+  ocp4_delete_all_idp
+
+  ocp4_print_setup_footer
+}
+
+function lab_grade {
+  local REVIEW_PASSWORD='L@bR3v!ew'
+  ocp4_print_grade_header
+
+  ocp4_login_as_admin
+
+  #Verify the cluster uses HTPasswd
+  pad2 "Cluster uses the HTPasswd identity provider"
+  local HTPASSWD_NAMES="$(oc get oauth/cluster -o jsonpath='{.spec.identityProviders[?(@.type=="HTPasswd")].name}')"
+  #if [[ $(oc get oauth cluster -o json | jq '.spec.identityProviders[] | select(.type=="HTPasswd") | [.] | length') == 1 ]]
+  if [ -n "${HTPASSWD_NAMES}" ]
+  then
+    print_PASS
+    local HTPASSWD_SECRETS="$(oc get oauth/cluster -o jsonpath='{.spec.identityProviders[?(@.type=="HTPasswd")].htpasswd.fileData.name}')"
+  else
+    print_FAIL
+  fi
+
+  #Verify user 'analyst' does not appear in any HTPasswd secret
+  if [ -n "${HTPASSWD_SECRETS}" ]
+  then
+    local ANALYST_EXISTS="false"
+    local temp_dir=/tmp/auth-review
+    if ! [ -d "${temp_dir}" ]
+    then
+      mkdir -p ${temp_dir}
+    fi
+    for SECRET in ${HTPASSWD_SECRETS}
+    do
+      oc extract secret/${SECRET} -n openshift-config --to ${temp_dir} --confirm
+      if [ -f ${temp_dir}/htpasswd ]
+      then
+        if grep analyst ${temp_dir}/htpasswd
+        then
+          ANALYST_EXISTS="true"
+        fi
+      fi
+    done
+
+    pad2 "User 'analyst' does not exist in the HTPasswd secret"
+    if [ "${ANALYST_EXISTS}" == "false" ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  fi
+
+  #Verify the 'admin' user can log in
+  pad2 "The 'admin' user can log in with a password of '${REVIEW_PASSWORD}'"
+  if oc login -u admin -p "${REVIEW_PASSWORD}" https://api.ocp4.example.com:6443 --insecure-skip-tls-verify
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  ocp4_login_as_admin
+
+  #Verify the 'admin' user has the correct cluster role binding
+  pad2 "The 'admin' user has the 'cluster-admin' cluster role"
+  local ROLE_ADMIN="false"
+  for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep "cluster-admin")
+  do
+    if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="User")].name}')" == "cluster-admin:admin" ]
+    then
+      ROLE_ADMIN="true"
+      break
+    fi
+  done
+  if [ "${ROLE_ADMIN}" == "true" ]
+  then
+    print_PASS
+  else
+    #We *could* check all cluster role bindings, but this can take a long time (about 5 minutes)
+    #for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep -v "cluster-admin")
+    #do
+    #  if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="User")].name}')" == "cluster-admin:admin" ]
+    #  then
+    #    ROLE_ADMIN="true"
+    #    break
+    #  fi
+    #done
+    #if [ "${ROLE_ADMIN}" == "true" ]
+    #then
+    #  print_PASS
+    #else
+    #  print_FAIL
+    #fi
+    print_FAIL
+  fi
+
+  #Verify that the 'system:authenticated:oauth' group does not have the 'self-provisioner' role
+  #NOTE: It is possible for a student to delete the default cluster role binding and create a
+  #different cluster role binding giving the 'self-provisioner' role to the 'system:authenticated:oauth' group.
+  #We are not checking for it because it takes too long.
+  pad2 "The 'self-provisioner' cluster role has been removed from the 'system:authenticated:oauth' group"
+  local ROLE_SELF="false"
+  for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep "self-provisioner")
+  do
+    if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "self-provisioner:system:authenticated:oauth" ]
+    then
+      ROLE_SELF="true"
+      break
+    fi
+  done
+  if [ "${ROLE_SELF}" == "true" ]
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify that the group managers exist
+  pad2 "The 'managers' group exists"
+  if oc get group managers
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'managers' group has the correct cluster role binding
+  pad2 "The 'managers' group has the 'self-provisioner' cluster role"
+  local ROLE_WP_MGRS="false"
+  for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep "self-provisioner")
+  do
+    if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "self-provisioner:managers" ]
+    then
+      ROLE_WP_MGRS="true"
+      break
+    fi
+  done
+  if [ "${ROLE_WP_MGRS}" == "true" ]
+  then
+    print_PASS
+  else
+    #We *could* check all cluster role bindings, but this can take a long time (about 5 minutes)
+    #for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep -v "self-provisioner")
+    #do
+    #  if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "self-provisioner:managers" ]
+    #  then
+    #    ROLE_WP_MGRS="true"
+    #    break
+    #  fi
+    #done
+    #if [ "${ROLE_WP_MGRS}" == "true" ]
+    #then
+    #  print_PASS
+    #else
+    #  print_FAIL
+    #fi
+    print_FAIL
+  fi
+
+  #Verify that the leader user is in the managers group
+  pad2 "The 'managers' group contains the 'leader' user"
+  if ! oc get group/managers -o jsonpath='{.users}' | grep -w leader
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify the 'leader' user can log in
+  pad2 "The 'leader' user can log in with a password of '${REVIEW_PASSWORD}'"
+  if oc login -u leader -p "${REVIEW_PASSWORD}" https://api.ocp4.example.com:6443 --insecure-skip-tls-verify
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  ocp4_login_as_admin
+
+  #Verify that the auth-review project exists
+  pad2 "The 'auth-review' project exists"
+  if ! oc project auth-review
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify the 'leader' user has the 'admin' role on the 'auth-review' project
+  #This role is automatically assigned to the user who creates the project
+  pad2 "The 'leader' user has the 'admin' role on the 'auth-review' project"
+  local ROLE_LEADER_ADMIN="false"
+  for BINDING in $(oc get rolebindings.rbac.authorization.k8s.io -o name -n auth-review)
+  do
+    if [ "$(oc get ${BINDING} -n auth-review -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="User")].name}')" == "admin:leader" ]
+    then
+      ROLE_LEADER_ADMIN="true"
+      break
+    fi
+  done
+  if [ "${ROLE_LEADER_ADMIN}" == "true" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify that the group developers exists
+  pad2 "The 'developers' group exists"
+  if ! oc get group developers
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify the 'developers' group has the correct role binding
+  pad2 "The 'developers' group has the 'edit' role on the 'auth-review' project"
+  local ROLE_WP_DEVS="false"
+  for BINDING in $(oc get rolebindings.rbac.authorization.k8s.io -o name -n auth-review)
+  do
+    if [ "$(oc get ${BINDING} -n auth-review -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "edit:developers" ]
+    then
+      ROLE_WP_DEVS="true"
+      break
+    fi
+  done
+  if [ "${ROLE_WP_DEVS}" == "true" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify that the developer user is in the dvelopers group
+  pad2 "The 'dvelopers' group contains the 'developer' user"
+  if ! oc get group developers -o jsonpath='{.users}' | grep -w developer
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify the 'developer' user can log in
+  pad2 "The 'developer' user can log in with a password of '${REVIEW_PASSWORD}'"
+  if oc login -u developer -p "${REVIEW_PASSWORD}" https://api.ocp4.example.com:6443 --insecure-skip-tls-verify
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  ocp4_login_as_admin
+
+  #Verify that the group qa exists
+  pad2 "The 'qa' group exists"
+  if ! oc get group qa
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify the 'qa' group has the correct role binding
+  pad2 "The 'qa' group has the 'view' role on the 'auth-review' project"
+  local ROLE_WP_QA="false"
+  for BINDING in $(oc get rolebindings.rbac.authorization.k8s.io -o name -n auth-review)
+  do
+    if [ "$(oc get ${BINDING} -n auth-review -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "view:qa" ]
+    then
+      ROLE_WP_QA="true"
+      break
+    fi
+  done
+  if [ "${ROLE_WP_QA}" == "true" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify that the tester user is in the QA group
+  pad2 "The 'qa' group contains the 'tester' user"
+  if ! oc get group qa -o jsonpath='{.users}' | grep -w tester
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify the 'tester' user can log in
+  pad2 "The 'tester' user can log in with a password of '${REVIEW_PASSWORD}'"
+  if oc login -u tester -p "${REVIEW_PASSWORD}" https://api.ocp4.example.com:6443 --insecure-skip-tls-verify
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  ocp4_login_as_admin
+
+  ocp4_print_grade_footer
+}
+
+function lab_finish {
+
+  ocp4_print_cleanup_header
+
+  ocp4_login_as_admin
+  ocp4_delete_project "${this}"
+  ocp4_cleanup_lab_files
+ 
+  ocp4_add_self_provisioing
+
+  #Remove the self-provisioner cluster role from the 'managers' group
+  for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep "self-provisioner")
+  do
+    if [ -n "${BINDING}" ]
+    then
+      if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "self-provisioner:managers" ]
+      then
+        pad2 "Removing the cluster role binding '${BINDING}'"
+        if oc delete ${BINDING}
+        then
+          print_SUCCESS
+          break
+        else
+          print_FAIL
+          break
+        fi
+      fi
+    fi
+  done
+  ocp4_delete_all_idp
+  ocp4_print_cleanup_footer
+}
+
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/labtool.do280.shlib
+
+grading_main_program "$@"

@@ -1,0 +1,764 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-review-template - lab script for DO280-OCP4
+#
+# SYNOPSIS
+#     lab-review-template {start|grade|finish}
+#
+#        start  - prepare the system for starting the lab
+#        grade  - evaluate student work
+#        finish - perform post-lab finish
+#
+# DESCRIPTION
+#     This script, based on a singular argument, either does start,
+#     grade, or finish for the [name of the exercise]
+#
+# CHANGELOG
+#   * Mon Oct 12 2020 Michael Phillips <miphilli@redhat.com>
+#   - initial creation
+
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:/root/bin:/usr/local/bin
+declare -a valid_commands=(start grade finish)
+
+# Change these variables to match your exercise
+this='review-template'
+title='Lab: Configure a Project Template with Resource and Network Restrictions'
+playbook_dir="/usr/local/lib/ansible"
+
+# Do not change these variables
+target='workstation'
+run_as_root='true'
+
+
+function lab_start {
+
+  ocp4_print_prereq_header
+
+  ocp4_is_cluster_up
+  ocp4_login_as_admin
+  opc4_restart_package_server_if_required
+  print_line
+  ocp4_fail_if_project_exists "${this}"
+  ocp4_exit_on_failure "It looks like you have already started this exercise. To try this exercise again, run 'lab ${this} finish' followed by 'lab ${this} start'."
+
+  ocp4_print_setup_header
+
+  ocp4_add_standard_users
+  ocp4_add_self_provisioing
+
+  print_line
+  print_line " Preparing the student's cluster:"
+  ocp4_grab_lab_files
+  deploy_ansible
+
+  if ! oc project ${this}-test
+  then
+    pad2 "Creating project '${this}-test'"
+    if oc new-project ${this}-test
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if ! oc get deployment/test -n ${this}-test
+  then
+    pad2 "Deploying sample application to '${this}-test'"
+    if oc new-app --name test --docker-image quay.io/redhattraining/hello-world-nginx:v1.0 -n ${this}-test
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if ! (oc get namespaces -l network.openshift.io/policy-group=ingress -o name | grep -w "namespace/default")
+  then
+    pad2 "Adding policy group label to the 'default' namespace"
+    if oc label namespace/default network.openshift.io/policy-group=ingress
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if ! [ -f /etc/pki/tls/certs/classroom-ca.pem ]
+  then
+    pad2 "Generating Classroom Certificate Authority (CA) files"
+    playbook="${playbook_dir}/classroom-ca.yml"
+    playbook_args=""
+    if ansible-playbook ${playbook} ${playbook_args}
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+      show_ansible "${playbook}" "${playbook_args}"
+    fi
+  fi
+
+  if ! [ -f ${labs}/${this}/hello-secure-combined.pem ]
+  then
+    pad2 "Generating application TLS certificate files"
+    playbook="${playbook_dir}/custom.yml"
+    playbook_args=""
+    if ansible-playbook ${playbook} ${playbook_args}
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+      show_ansible "${playbook}" "${playbook_args}"
+    fi
+  fi
+
+  PROJECT_TEMPLATE="$(oc get projects.config.openshift.io/cluster -o jsonpath='{.spec.projectRequestTemplate.name}')"
+  if [ -n "${PROJECT_TEMPLATE}" ]
+  then
+    pad2 "Clearing project template from 'projects.config.openshift.io/cluster'"
+    if oc patch projects.config.openshift.io/cluster --type merge --patch '{"spec":{"projectRequestTemplate":null}}'
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if oc get templates -n openshift-config
+  then
+    for TEMPLATE in $(oc get templates -o name -n openshift-config)
+    do
+      pad2 "Deleting template '${TEMPLATE}'"
+      if oc delete ${TEMPLATE} -n openshift-config
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    done
+  fi
+
+  ocp4_print_setup_footer
+}
+
+
+function lab_grade {
+  local SOLUTION_QUOTA_PODS="10"
+  local SOLUTION_QUOTA_CPU_LIMIT="4"
+  local SOLUTION_QUOTA_CPU_REQUEST="2"
+  local SOLUTION_QUOTA_MEMORY_LIMIT="4"
+  local SOLUTION_QUOTA_MEMORY_REQUEST="1"
+  local SOLUTION_LIMITS_CPU_LIMIT="100m"
+  local SOLUTION_LIMITS_CPU_REQUEST="30m"
+  local SOLUTION_LIMITS_MEMORY_LIMIT="100"
+  local SOLUTION_LIMITS_MEMORY_REQUEST="30"
+  local SOLUTION_NAME="hello-secure"
+  local SOLUTION_DEPLOYMENT_NAME="deployment/${SOLUTION_NAME}"
+  local SOLUTION_ROUTE_HOST="${SOLUTION_NAME}.apps.ocp4.example.com"
+  local SOLUTION_ROUTE_TERMINATION="passthrough"
+  local SOLUTION_HPA_MIN=1
+  local SOLUTION_HPA_MAX=5
+  local SOLUTION_HPA_PERCENT=80
+  local SOLUTION_TLS_SERIAL="$(openssl x509 -in /etc/pki/tls/certs/${SOLUTION_NAME}-combined.pem -noout -serial)"
+  local template_name="$(date +%s | base64 | cut -c11-15)"
+
+  ocp4_print_grade_header
+
+  ocp4_login_as_admin
+
+  print_line "Deploying resources for grading:"
+  pad2 "Creating project '${this}-${template_name,,}'"
+  if oc new-project ${this}-${template_name,,}
+  then
+    print_SUCCESS
+    pad2 "Deploying application 'policy-test'"
+    if oc new-app --name policy-test -n ${this}-${template_name,,} --docker-image quay.io/redhattraining/hello-world-nginx:v1.0
+    then
+      print_SUCCESS
+      pad2 "Creating route to 'policy-test-${template_name,,}.apps.ocp4.example.com'"
+      if oc expose svc/policy-test -n ${this}-${template_name,,} --hostname policy-test-${template_name,,}.apps.ocp4.example.com
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+      pad2 "Scaling application 'policy-test' to two replicas"
+      if oc scale --replicas 2 deployment/policy-test -n ${this}-${template_name,,}
+      then
+        sleep 5
+        print_SUCCESS
+        POD_READY="false"
+        POD_RUNNING="false"
+        POD_WAIT_LIMIT=30
+        POD_WAIT_COUNT=0
+        for POD in $(oc get pods -o name -n ${this}-${template_name,,})
+        do
+          pad2 "Waiting up to one minute for '${POD}' to be ready"
+          while [ ${POD_WAIT_COUNT} -lt ${POD_WAIT_LIMIT} ]
+          do
+            if [ "$(oc get ${POD} -n ${this}-${template_name,,} -o jsonpath='{.status.phase}')" == "Running" ]
+            then
+              POD_RUNNING="true"
+              if [ "$(oc get ${POD} -n ${this}-${template_name,,} -o jsonpath='{.status.containerStatuses[?(@.name=="policy-test")].started}')" == "true" ]
+              then
+                POD_READY="true"
+                break
+              else
+                sleep 2
+                ((POD_WAIT_COUNT=POD_WAIT_COUNT+1))
+              fi
+            else
+              sleep 2
+              ((POD_WAIT_COUNT=POD_WAIT_COUNT+1))
+            fi
+          done
+          if [ "${POD_READY}" == "true" -a "${POD_RUNNING}" == "true" ]
+          then
+            print_SUCCESS
+            POD_READY="false"
+            POD_RUNNING="false"
+            POD_WAIT_COUNT=0
+          else
+            print_FAIL
+          fi
+        done
+      else
+        print_FAIL
+      fi
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+  if ! oc project ${this}-test
+  then
+    pad2 "Creating project '${this}-test'"
+    if oc new-project ${this}-test
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if ! oc get deployment/test -n ${this}-test
+  then
+    pad2 "Deploying sample application to '${this}-test'"
+    if oc new-app --name test --docker-image quay.io/redhattraining/hello-world-nginx:v1.0 -n ${this}-test
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  
+  print_line
+  print_line "Testing project template:"
+  pad2 "New project template exists"
+  PROJECT_TEMPLATE="$(oc get projects.config.openshift.io/cluster -o jsonpath='{.spec.projectRequestTemplate.name}')"
+  if [ -n "${PROJECT_TEMPLATE}" ]
+  then
+    print_PASS
+    pad2 "New projects have the default label 'name=PROJECT-NAME'"
+    if [ "$(oc get namespaces -l name=${this}-${template_name,,} -o name)" == "namespace/${this}-${template_name,,}" ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+
+    pad2 "Default limit range exists"
+    if [ $(oc get limitrange -o name -n ${this}-${template_name,,} | wc -l) -gt 0 ]
+    then
+      print_PASS
+
+      for LIMIT in $(oc get limitrange -o name -n ${this}-${template_name,,})
+      do
+        local LIMIT_MEMORY_REQUEST="$(oc get ${LIMIT} -n ${this}-${template_name,,} -o jsonpath='{.spec.limits[?(@.type=="Container")].defaultRequest.memory}')"
+        local LIMIT_MEMORY_LIMIT="$(oc get ${LIMIT} -n ${this}-${template_name,,} -o jsonpath='{.spec.limits[?(@.type=="Container")].default.memory}')"
+        local LIMIT_CPU_REQUEST="$(oc get ${LIMIT} -n ${this}-${template_name,,} -o jsonpath='{.spec.limits[?(@.type=="Container")].defaultRequest.cpu}')"
+        local LIMIT_CPU_LIMIT="$(oc get ${LIMIT} -n ${this}-${template_name,,} -o jsonpath='{.spec.limits[?(@.type=="Container")].default.cpu}')"
+      done
+      
+      pad2 "Default limit range requests '${SOLUTION_LIMITS_MEMORY_REQUEST}' MiB memory per container"
+      if [ -n "${LIMIT_MEMORY_REQUEST}" ]
+      then
+        if [ "${SOLUTION_LIMITS_MEMORY_REQUEST}M" == "${LIMIT_MEMORY_REQUEST}" -o "${SOLUTION_LIMITS_MEMORY_REQUEST}Mi" == "${LIMIT_MEMORY_REQUEST}" ]
+        then
+          print_PASS
+        else
+          print_FAIL
+        fi
+      else
+        print_FAIL
+      fi
+
+      pad2 "Default limit range limits container memory to '${SOLUTION_LIMITS_MEMORY_LIMIT}' MiB"
+      if [ -n "${LIMIT_MEMORY_LIMIT}" ]
+      then
+        if [ "${SOLUTION_LIMITS_MEMORY_LIMIT}M" == "${LIMIT_MEMORY_LIMIT}" -o "${SOLUTION_LIMITS_MEMORY_LIMIT}Mi" == "${LIMIT_MEMORY_LIMIT}" ]
+        then
+          print_PASS
+        else
+          print_FAIL
+        fi
+      else
+        print_FAIL
+      fi
+
+      pad2 "Default limit range requests '${SOLUTION_LIMITS_CPU_REQUEST}' CPU per container"
+      if [ -n "${LIMIT_CPU_REQUEST}" ]
+      then
+        if [ "${SOLUTION_LIMITS_CPU_REQUEST}" == "${LIMIT_CPU_REQUEST}" ]
+        then
+          print_PASS
+        else
+          print_FAIL
+        fi
+      else
+        print_FAIL
+      fi
+
+      pad2 "Default limit range limits container CPU to '${SOLUTION_LIMITS_CPU_LIMIT}'"
+      if [ -n "${LIMIT_CPU_LIMIT}" ]
+      then
+        if [ "${SOLUTION_LIMITS_CPU_LIMIT}" == "${LIMIT_CPU_LIMIT}" ]
+        then
+          print_PASS
+        else
+          print_FAIL
+        fi
+      else
+        print_FAIL
+      fi
+    else
+      print_FAIL
+    fi
+        
+    pad2 "Default quota exists"
+    if [ $(oc get resourcequota -o name -n ${this}-${template_name,,} | wc -l) -gt 0 ]
+    then
+      print_PASS
+
+      pad2 "Default quota set to '${SOLUTION_QUOTA_PODS}' pods"
+      for QUOTA in $(oc get resourcequota -o name -n ${this}-${template_name,,})
+      do
+        local QUOTA_PODS=$(oc get ${QUOTA} -n ${this}-${template_name,,} -o jsonpath='{.spec.hard.pods}')
+      done
+      if [ "${SOLUTION_QUOTA_PODS}" == "${QUOTA_PODS}" ]
+      then
+        print_PASS
+      else
+        print_FAIL
+      fi
+
+      for QUOTA in $(oc get resourcequota -o name -n ${this}-${template_name,,})
+      do
+        local QUOTA_HARD="$(oc get ${QUOTA} -n ${this}-${template_name,,} -o jsonpath='{.spec.hard}')"
+      done
+      if [ -n "${QUOTA_HARD}" ]
+      then
+        local QUOTA_HARD_MEMORY="$(oc get ${QUOTA} -n ${this}-${template_name,,} -o jsonpath='{.spec.hard.memory}')"
+        pad2 "Default quota restricts total memory requests to '${SOLUTION_QUOTA_MEMORY_REQUEST}' GiB"
+        if [ -n "${QUOTA_HARD_MEMORY}" ]
+        then
+          if [ "${QUOTA_HARD_MEMORY}" == "${SOLUTION_QUOTA_MEMORY_REQUEST}G" -o "${QUOTA_HARD_MEMORY}" == "${SOLUTION_QUOTA_MEMORY_REQUEST}Gi" ]
+          then
+            print_PASS
+          else
+            print_FAIL
+          fi
+        else
+          if (echo "${QUOTA_HARD}" | sed 's/"//g' | grep -wE "requests.memory:${SOLUTION_QUOTA_MEMORY_REQUEST}G|requests.memory:${SOLUTION_QUOTA_MEMORY_REQUEST}Gi")
+          then
+            print_PASS
+          else
+            print_FAIL
+          fi
+        fi
+
+        pad2 "Default quota limits total memory to '${SOLUTION_QUOTA_MEMORY_LIMIT}' GiB"
+        if (echo "${QUOTA_HARD}" | sed 's/"//g' | grep -wE "limits.memory:${SOLUTION_QUOTA_MEMORY_LIMIT}G|limits.memory:${SOLUTION_QUOTA_MEMORY_LIMIT}Gi")
+        then
+          print_PASS
+        else
+          print_FAIL
+        fi
+
+        pad2 "Default quota restricts total CPU requests to '${SOLUTION_QUOTA_CPU_REQUEST}'"
+        local QUOTA_HARD_CPU="$(oc get ${QUOTA} -n ${this}-${template_name,,} -o jsonpath='{.spec.hard.cpu}')"
+        if [ -n "${QUOTA_HARD_CPU}" ]
+        then
+          if [ "${QUOTA_HARD_CPU}" == "${SOLUTION_QUOTA_CPU_REQUEST}" -o "${QUOTA_HARD_CPU}" == "${SOLUTION_QUOTA_CPU_REQUEST}000m" ]
+          then
+            print_PASS
+          else
+            print_FAIL
+          fi
+        else
+          if (echo "${QUOTA_HARD}" | sed 's/"//g' | grep -wE "requests.cpu:${SOLUTION_QUOTA_CPU_REQUEST}|requests.cpu:${SOLUTION_QUOTA_CPU_REQUEST}000m")
+          then
+            print_PASS
+          else
+            print_FAIL
+          fi
+        fi
+
+        pad2 "Default quota limits total CPU to '${SOLUTION_QUOTA_CPU_LIMIT}'"
+        if (echo "${QUOTA_HARD}" | sed 's/"//g' | grep -wE "limits.cpu:${SOLUTION_QUOTA_CPU_LIMIT}|limits.cpu:${SOLUTION_QUOTA_CPU_LIMIT}000m")
+        then
+          print_PASS
+        else
+          print_FAIL
+        fi
+      fi
+    else
+      print_FAIL
+    fi
+
+    pad2 "Routes respond to external requests"
+    local ROUTE_RESPONDS="false"
+    local ROUTE_FAIL_COUNT=0
+    local ROUTE_FAIL_LIMIT=5
+    while [ ${ROUTE_FAIL_COUNT} -lt ${ROUTE_FAIL_LIMIT} ]
+    do
+      if (curl --connect-timeout 10 -s http://policy-test-${template_name,,}.apps.ocp4.example.com | grep 'Hello, world from nginx')
+      then
+        ROUTE_RESPONDS="true"
+        break
+      else
+        sleep 2
+        ((ROUTE_FAIL_COUNT=ROUTE_FAIL_COUNT+1))
+      fi
+    done
+    if [ "${ROUTE_RESPONDS}" == "true" ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+    
+    TEST_POD1=$(oc get pods -l deployment=test -o name -n ${this}-test | head -n1)
+    TEST_POD1_NAME="$(oc get ${TEST_POD1} -n ${this}-test -o jsonpath='{.metadata.name}')"
+    POD1=$(oc get pods -l deployment=policy-test -o name -n ${this}-${template_name,,} | head -n1)
+    POD1_NAME="$(oc get ${POD1} -n ${this}-${template_name,,} -o jsonpath='{.metadata.name}')"
+    POD1_IP="$(oc get ${POD1} -n ${this}-${template_name,,} -o jsonpath='{.status.podIP}')"
+    POD2=$(oc get pods -l deployment=policy-test -o name -n ${this}-${template_name,,} | tail -n1)
+    POD2_NAME="$(oc get ${POD2} -n ${this}-${template_name,,} -o jsonpath='{.metadata.name}')"
+    POD2_IP="$(oc get ${POD2} -n ${this}-${template_name,,} -o jsonpath='{.status.podIP}')"
+
+    pad2 "Pods in the same project can communicate with each other"
+    local POD_RESPONDS="false"
+    local POD_FAIL_COUNT=0
+    local POD_FAIL_LIMIT=5
+    while [ ${POD_FAIL_COUNT} -lt ${POD_FAIL_LIMIT} ]
+    do
+      if (oc exec -n ${this}-${template_name,,} ${POD1_NAME} -- curl --connect-timeout 10 -s http://${POD2_IP}:8080 | grep 'Hello, world from nginx')
+      then
+        POD_RESPONDS="true"
+        break
+      else
+        if (oc exec -n ${this}-${template_name,,} ${POD2_NAME} -- curl --connect-timeout 10 -s http://${POD1_IP}:8080 | grep 'Hello, world from nginx')
+        then
+          POD_RESPONDS="true"
+          break
+        else
+          sleep 2
+          ((POD_FAIL_COUNT=POD_FAIL_COUNT+1))
+        fi
+      fi
+    done
+    if [ "${POD_RESPONDS}" == "true" ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+
+    pad2 "Pods do not respond to requests from pods in a different namespace"
+    if (oc exec -n ${this}-test ${TEST_POD1_NAME} -- curl --connect-timeout 10 -s http://${POD2_IP}:8080 | grep 'Hello, world from nginx')
+    then
+      print_FAIL
+    else
+      print_PASS
+    fi
+  else
+    print_FAIL
+  fi
+
+  # The following line should be commented out except for troubleshooting.
+  # ocp4_exit_on_failure "Retaing project '${this}-${template_name,,}' for troubleshooting."
+
+  print_line
+  print_line "Testing project '${this}':"
+  pad2 "Project '${this}' exists"
+  if oc project ${this}
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad2 "Deployment '${SOLUTION_NAME}' exists"
+  if oc get ${SOLUTION_DEPLOYMENT_NAME} -n ${this}
+  then
+    print_PASS
+    # Manually scaling the replicas back down to the minimum is a nice idea in
+    # theory, but the pods are recreated anyway. Leaving this block in here anyway.
+    local TEST_HPA_MIN="$(oc get hpa/${SOLUTION_NAME} -n ${this} -o jsonpath='{.spec.minReplicas}')"
+    if [ -n "${TEST_HPA_MIN}" ]
+    then
+      oc scale --replicas ${TEST_HPA_MIN} ${SOLUTION_DEPLOYMENT_NAME} -n ${this}
+    else
+      oc scale --replicas 1 ${SOLUTION_DEPLOYMENT_NAME} -n ${this}
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad2 "TLS secret exists using provided certificate files"
+  local SECRET_FOUND="false"
+  for SECRET in $(oc get secrets -o name -n ${this})
+  do
+    if [ "$(oc get ${SECRET} -n ${this} -o jsonpath='{.type}')" == "kubernetes.io/tls" ]
+    then
+      local TLS_SERIAL="$(oc extract ${SECRET} -n ${this} --keys tls.crt --to - | openssl x509 -noout -serial)"
+      if [ "${SOLUTION_TLS_SERIAL}" == "${TLS_SERIAL}" ]
+      then
+        print_PASS
+        local SECRET_NAME_SHORT="$(oc get ${SECRET} -n ${this} -o jsonpath='{.metadata.name}')"
+        SECRET_FOUND="true"
+        break
+      fi
+    fi
+  done
+  if [ "${SECRET_FOUND}" == "true" ]
+  then
+    local SECRET_MOUNTED="false"
+    local SECRET_MOUNTED_CORRECTLY="false"
+    for VOLUME in $(oc get ${SOLUTION_DEPLOYMENT_NAME} -n ${this} -o jsonpath='{.spec.template.spec.volumes[*].name}')
+    do
+      local VOLUME_SECRET_NAME=$(oc get ${SOLUTION_DEPLOYMENT_NAME} -n ${this} -o jsonpath="{.spec.template.spec.volumes[?(@.name=='${VOLUME}')].secret.secretName}")
+      if [ -n "${VOLUME_SECRET_NAME}" ]
+      then
+        SECRET_MOUNTED="true"
+        local MOUNT_POINT=$(oc get ${SOLUTION_DEPLOYMENT_NAME} -n ${this} -o jsonpath="{.spec.template.spec.containers[?(@.name=='${SOLUTION_NAME}')].volumeMounts[?(@.name=='${VOLUME}')].mountPath}")
+        if [ -n "${MOUNT_POINT}" ]
+        then
+          if [ "${MOUNT_POINT}" == "/run/secrets/nginx" ]
+          then
+            SECRET_MOUNTED_CORRECTLY="true"
+            break
+          fi
+        fi
+      fi
+    done
+    pad2 "Deployment '${SOLUTION_NAME}' mounts secret as a volume"
+    if [ "${SECRET_MOUNTED}" == "true" ]
+    then
+      print_PASS
+
+      pad2 "Deployment '${SOLUTION_NAME}' mounts secret at '/run/secrets/nginx'"
+      if [ "${SECRET_MOUNTED_CORRECTLY}" == "true" ]
+      then
+        print_PASS
+      else
+        print_FAIL
+      fi
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad2 "Passthrough route exists for '${SOLUTION_NAME}.apps.ocp4.example.com'"
+  local ROUTE_EXISTS="false"
+  for ROUTE in $(oc get routes -o name -n ${this})
+  do
+    local ROUTE_HOST="$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.host}')"
+    local ROUTE_TERMINATION="$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.tls.termination}')"
+    if [ -n "${ROUTE_HOST}" ]
+    then
+      if [ "${SOLUTION_ROUTE_HOST}" == "${ROUTE_HOST}" ]
+      then
+        if [ -n "${ROUTE_TERMINATION}" ]
+        then
+          if [ "${SOLUTION_ROUTE_TERMINATION}" == "${ROUTE_TERMINATION}" ]
+          then
+            ROUTE_EXISTS="true"
+          fi
+        fi
+      fi
+    fi
+    if [ "${ROUTE_EXISTS}" == "true" ]
+    then
+      break
+    fi
+  done
+
+  if [ "${ROUTE_EXISTS}" == "true" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  if [ "${ROUTE_EXISTS}" == "true" ]
+  then
+    pad2 "The 'https://${ROUTE_HOST}' URL responds to external requests"
+    local SECURE_ROUTE_RESPONDS="false"
+    local SECURE_ROUTE_FAIL_COUNT=0
+    local SECURE_ROUTE_FAIL_LIMIT=5
+    while [ ${SECURE_ROUTE_FAIL_COUNT} -lt ${SECURE_ROUTE_FAIL_LIMIT} ]
+    do
+      if (curl --connect-timeout 10 -s https://${ROUTE_HOST} | grep 'Hello, world from nginx')
+      then
+        SECURE_ROUTE_RESPONDS="true"
+        break
+      else
+        sleep 2
+        ((SECURE_ROUTE_FAIL_COUNT=SECURE_ROUTE_FAIL_COUNT+1))
+      fi
+    done
+    if [ "${SECURE_ROUTE_RESPONDS}" == "true" ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if oc get ${SOLUTION_DEPLOYMENT_NAME} -n ${this}
+  then
+    pad2 "Horizontal pod autoscaler exists for '${SOLUTION_NAME}' deployment"
+    local HPA_EXISTS="false"
+    if oc get hpa -o name -n ${this}
+    then
+      for HPA in $(oc get hpa -o name -n ${this})
+      do
+        if [ "$(oc get ${HPA} -n ${this} -o jsonpath='{.spec.scaleTargetRef.name}')" == "${SOLUTION_NAME}" ]
+        then
+          HPA_EXISTS="true"
+          local HPA_MIN="$(oc get ${HPA} -n ${this} -o jsonpath='{.spec.minReplicas}')"
+          local HPA_MAX="$(oc get ${HPA} -n ${this} -o jsonpath='{.spec.maxReplicas}')"
+          local HPA_PERCENT="$(oc get ${HPA} -n ${this} -o jsonpath='{.spec.targetCPUUtilizationPercentage}')"
+          break
+        fi
+      done
+    fi
+
+    if [ "${HPA_EXISTS}" == "true" ]
+    then
+      print_PASS
+
+      pad2 "HPA sets minimum to '${SOLUTION_HPA_MIN}' pod"
+      if [ ${SOLUTION_HPA_MIN} -eq ${HPA_MIN} ]
+      then
+        print_PASS
+      else
+        print_FAIL
+      fi
+
+      pad2 "HPA sets maximum to '${SOLUTION_HPA_MAX}' pods"
+      if [ ${SOLUTION_HPA_MAX} -eq ${HPA_MAX} ]
+      then
+        print_PASS
+      else
+        print_FAIL
+      fi
+
+      pad2 "HPA scales at '${SOLUTION_HPA_PERCENT}' percent CPU usage"
+      if [ ${SOLUTION_HPA_PERCENT} -eq ${HPA_PERCENT} ]
+      then
+        print_PASS
+      else
+        print_FAIL
+      fi
+
+      pad2 "HPA scales as expected (please be patient)"
+      ${solutions}/${this}/test-hpa.sh
+      if [ $(oc get ${HPA} -n ${this} -o jsonpath='{.status.desiredReplicas}') -gt ${SOLUTION_HPA_MIN} ]
+      then
+        print_PASS
+      else
+        print_FAIL
+      fi
+    else
+      print_FAIL
+    fi
+  fi
+
+  if oc project ${this}-${template_name,,}
+  then
+    print_line
+    print_line "Cleaning up resources used for grading:"
+    ocp4_delete_project "${this}-${template_name,,}"
+  fi
+
+  ocp4_print_grade_footer
+}
+
+
+function lab_finish {
+
+  ocp4_print_cleanup_header
+
+  ocp4_login_as_admin
+  ocp4_delete_project "${this}" "${this}-test"
+  ocp4_cleanup_lab_files
+
+  if oc get namespaces -l network.openshift.io/policy-group=ingress -o name | grep -w "namespace/default"
+  then
+    pad2 "Removing policy group label from the 'default' namespace"
+    if oc label namespace default network.openshift.io/policy-group-
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  PROJECT_TEMPLATE="$(oc get projects.config.openshift.io/cluster -o jsonpath='{.spec.projectRequestTemplate.name}')"
+  if [ -n "${PROJECT_TEMPLATE}" ]
+  then
+    pad2 "Clearing project template from 'projects.config.openshift.io/cluster'"
+    if oc patch projects.config.openshift.io/cluster --type merge --patch '{"spec":{"projectRequestTemplate":null}}'
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if oc get templates -n openshift-config
+  then
+    for TEMPLATE in $(oc get templates -o name -n openshift-config)
+    do
+      pad2 "Deleting template '${TEMPLATE}'"
+      if oc delete ${TEMPLATE} -n openshift-config
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    done
+  fi
+
+  ocp4_print_cleanup_footer
+}
+
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/labtool.do280.shlib
+
+grading_main_program "$@"

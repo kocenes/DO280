@@ -1,0 +1,826 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-review-troubleshoot - lab script for DO280-OCP4
+#                          Comprehensive Review
+#
+# SYNOPSIS
+#     lab-review-troubleshoot {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab finish
+#        grading - perform grading for the lab
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or finish for
+#     the [name of the exercise]
+#
+# CHANGELOG
+#   * Wed Jun 02 2021 Harpal Singh <harpasin@redhat.com>
+#   - change deploymentconfig to deployment
+#   * Fri Oct 23 2020 Michael Phillips <miphilli@redhat.com>
+#   - renamed the script to lab-review-troubleshoot
+#   * Thu Oct 22 2020 Michael Phillips <miphilli@redhat.com>
+#   - modified lab_start to check and set SELinux file context if needed
+#   - modified lab_grade to add checks for PVCs
+#   - modified lab_finish to remove the exercise project
+#   - updated the lab title
+#   * Tue Sep 15 2020 Michael Phillips <miphilli@redhat.com>
+#   - renamed the script to lab-compreview so that there will not be conflicts when merged into DO285
+#   * Wed Aug 19 2020 Michael Phillips <miphilli@redhat.com>
+#   - added the ocp4_login_as_admin function to the lab_start function
+#   * Tue Aug 11 2020 Michael Phillips <miphilli@redhat.com>
+#   - significant updates to the grading function
+#   * Tue Aug 04 2020 Michael Phillips <miphilli@redhat.com>
+#   - hard-coded the RHT_OCP4_WILDCARD_DOMAIN variable (even though it is in a comment)
+#   * Mon Dec 30 2019 Iván Chavero <ichavero@redhat.com>
+#   - initial creation
+
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:/root/bin:/usr/local/bin
+declare -a valid_commands=(start finish grade)
+
+# Change these variables to match your exercise
+this='review-troubleshoot'
+title='Lab: Troubleshoot an OpenShift Cluster and Applications'
+
+# Do not change these variables
+target='workstation'
+run_as_root='true'
+
+# Grading/Finish variables
+SCC_SHORT="anyuid"
+SCC="system:openshift:scc:${SCC_SHORT}"
+SCC_BINDING="clusterrolebinding.rbac.authorization.k8s.io/${SCC}"
+SERVICE_ACCOUNT="wordpress-sa"
+
+function lab_start {
+
+  ocp4_print_prereq_header
+
+  ocp4_is_cluster_up
+  ocp4_login_as_admin
+  opc4_restart_package_server_if_required
+  ocp4_fail_if_project_exists "${this}"
+  ocp4_exit_on_failure "It looks like you have already started this exercise. To try this exercise again, run 'lab ${this} finish' followed by 'lab ${this} start'."
+
+  ocp4_print_setup_header
+
+  ocp4_delete_all_idp
+
+
+  # There could be other cluster role bindings that assign the 'cluster-admin' role to the 'admin'
+  # users, but it takes about 2 minutes to search.
+  # To search through all cluster role bindings, remove '| grep "cluster-admin"' from the following line.
+  for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep "cluster-admin")
+  do
+    if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="User")].name}')" == "cluster-admin:admin" ]
+    then
+      pad2 "Removing '${BINDING}'"
+      if oc delete ${BINDING}
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi 
+  done
+
+  if oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep self-provisioner
+  then
+    local ROLE_ADD="true"
+    for ROLE in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep self-provisioner)
+    do
+      if [ "$(oc get ${ROLE} -o jsonpath='{.subjects[?(@.kind=="Group")].name}')" == "system:authenticated:oauth" ]
+      then
+        ROLE_ADD="false"
+        break
+      fi
+    done
+    if [ "${ROLE_ADD,,}" == "true" ]
+    then
+      pad2 "Restoring 'self-provisioner' privileges to authenticated users"
+      if oc adm policy add-cluster-role-to-group --rolebinding-name self-provisioners self-provisioner system:authenticated:oauth
+       then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi
+  else
+    pad2 "Restoring 'self-provisioner' privileges to authenticated users"
+    if oc adm policy add-cluster-role-to-group --rolebinding-name self-provisioners self-provisioner system:authenticated:oauth
+     then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  #Remove the anyuid SCC cluster role binding if necessary
+  if oc get ${SCC_BINDING}
+  then
+    pad2 "Removing the 'anyuid' SCC cluster role binding"
+    if oc delete ${SCC_BINDING}
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  # Check SELinux file context of utility:/exports-ocp4 and adjust if necessary
+  if ! (ssh root@utility ls -Zd /exports-ocp4 | grep container_file_t)
+  then
+    pad2 "Configuring SELinux context rule for utility:/exports-ocp4"
+    ssh root@utility "semanage fcontext -a -t container_file_t '/exports-ocp4(/.*)?'"
+    if [ $? -eq 0 ]
+    then
+      print_SUCCESS
+      pad2 "Applying SELinux context rule to utility:/exports-ocp4"
+      ssh root@utility restorecon -RF /exports-ocp4
+      if [ $? -eq 0 ]
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    else
+      print_FAIL
+    fi
+  fi
+
+  ocp4_grab_lab_files no_solution
+  ocp4_print_setup_footer
+}
+
+
+function lab_grade {
+  local REVIEW_PASSWORD="review"
+  ocp4_print_grade_header
+
+  ocp4_login_as_admin
+
+  pad2 "The '${this}' project exists"
+  if oc get project/${this}
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line " Hello World Application"
+
+  pad2 "The 'hello-world-nginx' application created as a 'deployment'"
+  if oc get deployment/hello-world-nginx -n ${this}
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad2 "The 'hello-world-nginx' application responds to external requests"
+  # Identify the service used for the 'hello-world-nginx' application
+  for SVC in $(oc get svc -o name -n ${this})
+  do
+    if [ "$(oc get ${SVC} -n ${this} -o jsonpath='{.spec.selector.deployment}')" == "hello-world-nginx" ]
+    then
+      local SVC_HELLO="$(oc get ${SVC} -n ${this} -o jsonpath='{.metadata.name}')"
+      break
+    elif [ "$(oc get ${SVC} -n ${this} -o jsonpath='{.spec.selector.deploymentconfig}')" == "hello-world-nginx" ]
+    then
+      local SVC_HELLO="$(oc get ${SVC} -n ${this} -o jsonpath='{.metadata.name}')"
+      break
+    fi
+  done
+  for ROUTE in $(oc get routes -o name -n ${this})
+  do
+    if [ "$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.to.name}')" == "${SVC_HELLO}" ]
+    then
+      local URL_HELLO="$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.host}')"
+      break
+    fi
+  done
+  if [ -n "${URL_HELLO}" ]
+  then
+    if curl -s http://${URL_HELLO} | grep 'Hello, world from nginx!'
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'cluster-users' idp exists
+  print_line
+  print_line " Identity Provider Configuration and Users"
+  pad2 "The 'cluster-users' identity provider exists"
+  if [[ $(oc get oauth cluster -o json | jq '.spec.identityProviders[] | select(.name=="cluster-users") | [.] | length') == 1 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the existence of the compreview-users secret
+  pad2 "The 'compreview-users' secret exists"
+  if ! oc get secret compreview-users -n openshift-config
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify the idp is setup correctly
+  pad2 "The identity provider uses the 'compreview-users' secret"
+  if [[ $(oc get oauth cluster -o json | jq '.spec.identityProviders[] | select(.name=="cluster-users") | .htpasswd.fileData.name == "compreview-users"') == 'true' ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line " User Groups and Roles"
+  #Verify the 'leader' user can log in
+  pad2 "The 'admin' user can log in with a password of '${REVIEW_PASSWORD}'"
+  if oc login -u admin -p ${REVIEW_PASSWORD} https://api.ocp4.example.com:6443 --insecure-skip-tls-verify
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  ocp4_login_as_admin
+  #Verify admin has cluster-admin privileges
+  pad2 "The 'admin' user has the 'cluster-admin' cluster role"
+  local ROLE_ADMIN="false"
+  # Because it can take time to check all cluster role bindings,
+  # start by searching for the ones most likely to match.
+  for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep "cluster-admin")
+  do
+    if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="User")].name}')" == "cluster-admin:admin" ]
+    then
+      ROLE_ADMIN="true"
+      break
+    fi 
+  done
+  if [ "${ROLE_ADMIN}" == "true" ]
+  then
+    print_PASS
+  else
+    # The most likely role bindings did not match.
+    # This check will take time (about 2 minutes) and will most likely fail.
+    for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep -v "cluster-admin")
+    do
+      if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="User")].name}')" == "cluster-admin:admin" ]
+      then
+        ROLE_ADMIN="true"
+        break
+      fi 
+    done
+    if [ "${ROLE_ADMIN}" == "true" ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  #Verify the 'leaders' group exists
+  pad2 "The 'leaders' group exists"
+  if oc get group/leaders
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  #Verify that the leader user is in the correct group
+  pad2 "The 'leaders' group contains the 'leader' user"
+  if ! oc get group/leaders -o jsonpath='{.users}' | grep -w leader
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+  #Verify the 'leader' user can log in
+  pad2 "The 'leader' user can log in with a password of '${REVIEW_PASSWORD}'"
+  if oc login -u leader -p ${REVIEW_PASSWORD} https://api.ocp4.example.com:6443 --insecure-skip-tls-verify
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  ocp4_login_as_admin
+
+  #Verify the 'leaders' group has the correct cluster role binding 
+  pad2 "The 'leaders' group has the 'self-provisioner' cluster role"
+  local ROLE_LEADERS="false"
+  for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep "self-provisioner")
+  do
+    if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "self-provisioner:leaders" ]
+    then
+      ROLE_LEADERS="true"
+      break
+    fi
+  done
+  if [ "${ROLE_LEADERS}" == "true" ]
+  then
+    print_PASS
+  else
+    for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep -v "self-provisioner")
+    do
+      if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "self-provisioner:leaders" ]
+      then
+        ROLE_LEADERS="true"
+        break
+      fi
+    done
+    if [ "${ROLE_LEADERS}" == "true" ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  fi
+
+  #Verify that the 'system:authenticated:oauth' group does not have the 'self-provisioner' role
+  #NOTE: It is possible for a student to delete the default cluster role binding and create a 
+  #different cluster role binding giving the 'self-provisioner' role to the 'system:authenticated:oauth' group.
+  #We are not checking for it because it takes too long.
+  print_line
+  pad2 "The 'self-provisioner' cluster role has been removed from the 'system:authenticated:oauth' group"
+  local ROLE_SELF="false"
+  for BINDING in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep "self-provisioner")
+  do
+    if [ "$(oc get ${BINDING} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "self-provisioner:system:authenticated:oauth" ]
+    then
+      ROLE_SELF="true"
+      break
+    fi
+  done
+  if [ "${ROLE_SELF}" == "true" ]
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  print_line
+  #Verify the 'developers' group exists
+  pad2 "The 'developers' group exists"
+  if oc get group/developers
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  #Verify that the 'developer' user is in the correct group
+  pad2 "The 'developers' group contains the 'developer' user"
+  if ! oc get group/developers -o jsonpath='{.users}' | grep -w developer
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+  #Verify that the 'developer' user can log in
+  pad2 "The 'developer' user can log in with a password of '${REVIEW_PASSWORD}'"
+  if oc login -u developer -p ${REVIEW_PASSWORD} https://api.ocp4.example.com:6443 --insecure-skip-tls-verify
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  ocp4_login_as_admin
+
+  #Verify the 'developers' group has the correct role binding
+  pad2 "The 'developers' group has the 'edit' role on the '${this}' project"
+  local ROLE_DEVELOPERS="false"
+  for BINDING in $(oc get rolebindings.rbac.authorization.k8s.io -o name -n ${this})
+  do
+    if [ "$(oc get ${BINDING} -n ${this} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "edit:developers" ]
+    then
+      ROLE_DEVELOPERS="true"
+      break
+    fi 
+  done
+  if [ "${ROLE_DEVELOPERS}" == "true" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  #Verify the 'qa' group exists
+  pad2 "The 'qa' group exists"
+  if oc get group/qa
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  #Verify that the 'qa-engineer' user is in the 'qa' group
+  pad2 "The 'qa' group contains the 'qa-engineer' user"
+  if ! oc get group/qa -o jsonpath='{.users}' | grep -w qa-engineer
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+  #Verify that the 'qa-engineer' user can log in
+  pad2 "The 'qa-engineer' user can log in with a password of '${REVIEW_PASSWORD}'"
+  if oc login -u qa-engineer -p ${REVIEW_PASSWORD} https://api.ocp4.example.com:6443 --insecure-skip-tls-verify
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  ocp4_login_as_admin
+
+  #Verify the 'qa' group has the correct role binding
+  pad2 "The 'qa' group has the 'view' role on the '${this}' project"
+  local ROLE_QA="false"
+  for BINDING in $(oc get rolebindings.rbac.authorization.k8s.io -o name -n ${this})
+  do
+    if [ "$(oc get ${BINDING} -n ${this} -o jsonpath='{.roleRef.name}:{.subjects[?(@.kind=="Group")].name}')" == "view:qa" ]
+    then
+      ROLE_QA="true"
+      break
+    fi 
+  done
+  if [ "${ROLE_QA}" == "true" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line ' MySQL Database Application Configuration'
+  #Verify that the mysql application exists
+  pad2 "The 'mysql' database application created as a 'deployment'"
+  if oc get dc/mysql -n ${this}
+  then
+    # The instructions indicate that the mysql application
+    # must be created as a deployment, not a deploymentconfig.
+    print_FAIL
+    local APP_MYSQL="$(oc get dc/mysql -o name -n ${this})"
+    local POD_MYSQL="$(oc get pods -l deploymentconfig=mysql -n ${this} -o template --template '{{range .items}}{{.metadata.name}}{{end}}')"
+  elif oc get deployment/mysql -n ${this}
+  then
+    print_PASS
+    local APP_MYSQL="$(oc get deployment/mysql -o name -n ${this})"
+    local POD_MYSQL="$(oc get pods -l deployment=mysql -n ${this} -o template --template '{{range .items}}{{.metadata.name}}{{end}}')"
+  else
+    print_FAIL
+  fi
+
+  #Verify that the mysql exists
+  pad2 "The 'mysql' secret exists"
+  if ! oc get secret mysql -n ${this}
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  #Verify that the mysql secret was used to initialize the mysql environment variables
+  pad2 "The 'MYSQL_ROOT_PASSWORD' environment variable is set from the 'mysql' secret"
+  if [ $(oc get ${APP_MYSQL} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="mysql")].env[?(@.name=="MYSQL_ROOT_PASSWORD")].valueFrom.secretKeyRef.name}') == "mysql" -a $(oc get ${APP_MYSQL} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="mysql")].env[?(@.name=="MYSQL_ROOT_PASSWORD")].valueFrom.secretKeyRef.key}') == "password" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the the mysql app mounts a volume to /var/lib/mysql/data
+  local MOUNT_PATH="/var/lib/mysql/data"
+  local SOLUTION_PVC_SIZE="2"
+  local SOLUTION_PVC_MODE="ReadWriteOnce"
+  pad2 "${APP_MYSQL} mounts a volume to '${MOUNT_PATH}'"
+  local VOLUME_NAME=$(oc get ${APP_MYSQL} -n ${this} -o jsonpath="{.spec.template.spec.containers[?(@.name=='mysql')].volumeMounts[?(@.mountPath=='${MOUNT_PATH}')].name}")
+  if [ -n "${VOLUME_NAME}" ]
+  then
+    print_PASS
+    local CLAIM_NAME=$(oc get ${APP_MYSQL} -n ${this} -o jsonpath="{.spec.template.spec.volumes[?(@.name=='${VOLUME_NAME}')].persistentVolumeClaim.claimName}")
+    if [ -n "${CLAIM_NAME}" ]
+    then
+      pad2 "${APP_MYSQL} uses a PVC with a size of '${SOLUTION_PVC_SIZE}' GB"
+      local PVC_SIZE=$(oc get pvc -n ${this} -o jsonpath="{.items[?(@.metadata.name=='${CLAIM_NAME}')].spec.resources.requests.storage}")
+      if [ "${PVC_SIZE}" == "${SOLUTION_PVC_SIZE}G" -o "${PVC_SIZE}" == "${SOLUTION_PVC_SIZE}Gi" -o "${PVC_SIZE}" == "${SOLUTION_PVC_SIZE}" ]
+      then
+        print_PASS
+      else
+        print_FAIL
+      fi
+      pad2 "${APP_MYSQL} uses a PVC with the '${SOLUTION_PVC_MODE}' mode"
+      local PVC_MODE=$(oc get pvc -n ${this} -o jsonpath="{.items[?(@.metadata.name=='${CLAIM_NAME}')].spec.accessModes[0]}")
+      if [ "${PVC_MODE}" == "${SOLUTION_PVC_MODE}" ]
+      then
+        print_PASS
+      else
+        print_FAIL
+      fi
+    fi
+  else
+    print_FAIL
+    # Check for PVCs that could be mounted elsewhere
+    pad2 "PVC exists"
+    local PVC_COUNT=$(oc get pvc -o name -n ${this} | wc -l)
+    if [ ${PVC_COUNT} -eq 0 ]
+    then
+      print_FAIL
+    else
+      print_PASS
+      for PVC in $(oc get pvc -o name -n ${this})
+      do
+        local PVC_NAME_SHORT=$(oc get ${PVC} -n ${this} -o jsonpath="{.metadata.name}")
+        pad2 "PVC '${PVC_NAME_SHORT}' has a size of '${SOLUTION_PVC_SIZE}G'"
+        local PVC_SIZE=$(oc get pvc -n ${this} -o jsonpath="{.items[?(@.metadata.name=='${PVC_NAME_SHORT}')].spec.resources.requests.storage}")
+        if [ "${PVC_SIZE}" == "${SOLUTION_PVC_SIZE}G" -o "${PVC_SIZE}" == "${SOLUTION_PVC_SIZE}Gi" ]
+        then
+          print_PASS
+        else
+          print_FAIL
+        fi
+        pad2 "PVC '${PVC_NAME_SHORT}' has the '${SOLUTION_PVC_MODE}' access mode"
+        local PVC_MODE=$(oc get pvc -n ${this} -o jsonpath="{.items[?(@.metadata.name=='${PVC_NAME_SHORT}')].spec.accessModes[0]}")
+        if [ "${PVC_MODE}" == "${SOLUTION_PVC_MODE}" ]
+        then
+          print_PASS
+        else
+          print_FAIL
+        fi
+        pad2 "${APP_MYSQL} mounts the '${PVC_NAME_SHORT}' PVC"
+        local MOUNTED_VOLUME_NAME=$(oc get ${APP_MYSQL} -n ${this} -o jsonpath="{.spec.template.spec.volumes[?(@.persistentVolumeClaim.claimName=='${PVC_NAME_SHORT}')].name}")
+        if [ -n "${MOUNTED_VOLUME_NAME}" ]
+        then
+          print_PASS
+          pad2 "Volume '${MOUNTED_VOLUME_NAME}' mounted to '${MOUNT_PATH}'"
+          local MOUNTED_VOLUME_PATH=$(oc get ${APP_MYSQL} -n ${this} -o jsonpath="{.spec.template.spec.containers[?(@.name=='mysql')].volumeMounts[?(@.name=='${MOUNTED_VOLUME_NAME}')].mountPath}")
+          if [ -n "${MOUNTED_VOLUME_PATH}" ]
+          then
+            if [ "${MOUNTED_VOLUME_PATH}" == "${MOUNT_PATH}" ]
+            then
+              print_PASS
+            else
+              print_FAIL
+            fi
+          fi
+        else
+          print_FAIL
+        fi
+      done
+    fi
+  fi
+
+  print_line
+  print_line ' Wordpress Application Configuration'
+  #Verify that the wordpress application exists
+  pad2 "The 'wordpress' application created as a 'deployment'"
+  if oc get dc/wordpress -n ${this}
+  then
+    # The instructions indicate that the wordpress application
+    # must be created as a deployment, not a deploymentconfig.
+    print_FAIL
+    local APP_WORDPRESS="$(oc get dc/wordpress -o name -n ${this})"
+    local POD_WORDPRESS="$(oc get pods -l deploymentconfig=wordpress -n ${this} -o template --template '{{range .items}}{{.metadata.name}}{{end}}')"
+  elif oc get deployment/wordpress -n ${this}
+  then
+    print_PASS
+    local APP_WORDPRESS="$(oc get deployment/wordpress -o name -n ${this})"
+    local POD_WORDPRESS="$(oc get pods -l deployment=wordpress -n ${this} -o template --template '{{range .items}}{{.metadata.name}}{{end}}')"
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'wordpress-sa' service account exists
+  pad2 "The 'wordpress-sa' service account exists"
+  if oc get sa/wordpress-sa
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'wordpress-sa' service account uses the 'anyuid' SCC
+  pad2 "The 'wordpress-sa' service account uses the 'anyuid' SCC"
+  if [ "$(oc get ${SCC_BINDING} -o jsonpath='{.roleRef.name}::{.subjects[?(@.kind=="ServiceAccount")].name}::{.subjects[?(@.kind=="ServiceAccount")].namespace}')" == "${SCC}::${SERVICE_ACCOUNT}::${this}" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'wordpress' application uses the 'wordpress-sa' service account
+  pad2 "The 'wordpress' application uses the 'wordpress-sa' service account"
+  if [ "$(oc get ${APP_WORDPRESS} -o jsonpath='{.spec.template.spec.serviceAccountName}')" == "wordpress-sa" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify the 'wordpress' applications runs as anyuid
+  pad2 "The 'wordpress' application uses the 'anyuid' security context constraint"
+  if oc describe pod ${POD_WORDPRESS} | grep "openshift.io/scc: anyuid"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  #Verify that the mysql secret was used to initialize the wordpress environment variables
+  pad2 "The 'WORDPRESS_DB_PASSWORD' environment variable is set from the 'mysql' secret"
+  if [ $(oc get ${APP_WORDPRESS} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="wordpress")].env[?(@.name=="WORDPRESS_DB_PASSWORD")].valueFrom.secretKeyRef.name}') == "mysql" -a $(oc get ${APP_WORDPRESS} -n ${this} -o jsonpath='{.spec.template.spec.containers[?(@.name=="wordpress")].env[?(@.name=="WORDPRESS_DB_PASSWORD")].valueFrom.secretKeyRef.key}') == "password" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad2 "The 'wordpress' application responds to exteral requests"
+  for SVC in $(oc get svc -o name -n ${this})
+  do
+    if [ "$(oc get ${SVC} -n ${this} -o jsonpath='{.spec.selector.deployment}')" == "wordpress" ]
+    then
+      local SVC_WORDPRESS="$(oc get ${SVC} -n ${this} -o jsonpath='{.metadata.name}')"
+      break
+    elif [ "$(oc get ${SVC} -n ${this} -o jsonpath='{.spec.selector.deploymentconfig}')" == "wordpress" ]
+    then
+      local SVC_WORDPRESS="$(oc get ${SVC} -n ${this} -o jsonpath='{.metadata.name}')"
+      break
+    fi
+  done
+  for ROUTE in $(oc get routes -o name -n ${this})
+  do
+    if [ "$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.to.name}')" == "${SVC_WORDPRESS}" ]
+    then
+      local URL_WORDPRESS="$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.host}')"
+      break
+    fi
+  done
+  if [ -n "${URL_WORDPRESS}" ]
+  then
+    if curl -s http://${URL_WORDPRESS}/wp-admin/install.php | grep 'WordPress &rsaquo; Installation'
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+
+  print_line
+  #Verify that the famous-quotes application exists
+  print_line ' Famous Quotes App Configuration'
+  pad2 "The 'famous-quotes' application created as a 'deployment'"
+  if oc get deployment/famous-quotes -n ${this}
+  then
+    print_PASS
+    local APP_QUOTES="$(oc get deployment/famous-quotes -o name -n ${this})"
+    local POD_QUOTES="$(oc get pods -l deployment=famous-quotes -n ${this} -o template --template '{{range .items}}{{.metadata.name}}{{end}}')"
+  elif oc get dc/famous-quotes -n ${this}
+  then
+    print_FAIL
+    local APP_QUOTES="$(oc get dc/famous-quotes -o name -n ${this})"
+    local POD_QUOTES="$(oc get pods -l deploymentconfig=famous-quotes -n ${this} -o template --template '{{range .items}}{{.metadata.name}}{{end}}')"
+  else
+    print_FAIL
+  fi
+
+  if [ -n "${APP_QUOTES}" ]
+  then
+    pad2 "The 'famous-quotes' application does not specify a node selector"
+    local QUOTES_SELECTOR="$(oc get ${APP_QUOTES} -n ${this} -o jsonpath='{.spec.template.spec.nodeSelector}')"
+    if [ -n "${QUOTES_SELECTOR}" ]
+    then
+      print_FAIL
+    else
+      print_PASS
+    fi
+  fi
+
+  pad2 "The 'famous-quotes' application responds to exteral requests"
+  for SVC in $(oc get svc -o name -n ${this})
+  do
+    if [ "$(oc get ${SVC} -n ${this} -o jsonpath='{.spec.selector.deployment}')" == "famous-quotes" ]
+    then
+      local SVC_QUOTES="$(oc get ${SVC} -n ${this} -o jsonpath='{.metadata.name}')"
+      break
+    elif [ "$(oc get ${SVC} -n ${this} -o jsonpath='{.spec.selector.deploymentconfig}')" == "famous-quotes" ]
+    then
+      local SVC_QUOTES="$(oc get ${SVC} -n ${this} -o jsonpath='{.metadata.name}')"
+      break
+    fi
+  done
+  for ROUTE in $(oc get routes -o name -n ${this})
+  do
+    if [ "$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.to.name}')" == "${SVC_QUOTES}" ]
+    then
+      local URL_QUOTES="$(oc get ${ROUTE} -n ${this} -o jsonpath='{.spec.host}')"
+      break
+    fi
+  done
+  if [ -n "${URL_QUOTES}" ]
+  then
+    if curl -s http://${URL_QUOTES} | grep "Quote List"
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+#################################################################
+# IC: Removed for now due lack of time for polishing tasks
+# # DK: Any URL under the wildcard domain will pass this test -
+# #     even if the URL/route does not exist...
+# # DK: We need to re-think this test; leaving it out for now...
+##################################################################
+#  pad2 "verify SSL access to famous quotes app"
+#  if [[ $(curl -v -I https://famous-quotes-tls.${RHT_OCP4_WILDCARD_DOMAIN} 2>&1 | grep TLS) == *"TLS handshake"* ]]
+#  then
+#    print_PASS
+#  else
+#    print_FAIL
+#  fi
+
+  ocp4_print_grade_footer
+
+}
+
+
+function lab_finish {
+
+  ocp4_print_cleanup_header
+
+  ocp4_login_as_admin
+
+  ocp4_delete_all_idp
+
+  ocp4_delete_project "${this}"
+  ocp4_cleanup_lab_files no_solution
+
+  local ROLE_ADD="true"
+  for ROLE in $(oc get clusterrolebindings.rbac.authorization.k8s.io -o name | grep self-provisioner)
+  do
+    if [ "$(oc get ${ROLE} -o jsonpath='{.subjects[?(@.kind=="Group")].name}')" == "system:authenticated:oauth" ]
+    then
+      ROLE_ADD="false"
+      break
+    elif [ "$(oc get ${ROLE} -o jsonpath='{.subjects[?(@.kind=="Group")].name}')" == "leaders" ]
+    then
+      pad2 "Removing 'self-provisioner' role from group 'leaders'"
+      if oc delete ${ROLE}
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi
+  done
+  if [ "${ROLE_ADD,,}" == "true" ]
+  then
+    pad2 "Restoring cluster privileges"
+    if oc adm policy add-cluster-role-to-group --rolebinding-name self-provisioners self-provisioner system:authenticated:oauth
+     then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  #Remove the anyuid SCC cluster role binding if necessary
+  if oc get ${SCC_BINDING}
+  then
+    pad2 "Removing the 'anyuid' SCC cluster role binding"
+    if oc delete ${SCC_BINDING}
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  ocp4_print_cleanup_footer
+}
+
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/labtool.do280.shlib
+
+grading_main_program "$@"

@@ -1,0 +1,11 @@
+[rhel-8-supplementary]
+baseurl = http://content.example.com/ocp4.2/x86_64/rheladditional/rhel-8-for-x86_64-supplementary-rpms/
+enabled = true
+gpgcheck = false
+name = RHEL Server Supplementary Packages
+
+[rhel-8-updates]
+baseurl = http://content.example.com/rhel8.0/x86_64/updates/rhel-8-for-x86_64-appstream-rpms/
+enabled = true
+gpgcheck = false
+name = RHEL 8 Updates

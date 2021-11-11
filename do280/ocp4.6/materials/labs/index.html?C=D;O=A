@@ -1,0 +1,43 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+ <head>
+  <title>Index of /courses/do280/ocp4.6/materials/labs</title>
+ </head>
+ <body>
+<h1>Index of /courses/do280/ocp4.6/materials/labs</h1>
+  <table>
+   <tr><th valign="top"><img src="/icons/blank.gif" alt="[ICO]"></th><th><a href="?C=N;O=A">Name</a></th><th><a href="?C=M;O=A">Last modified</a></th><th><a href="?C=S;O=A">Size</a></th><th><a href="?C=D;O=D">Description</a></th></tr>
+   <tr><th colspan="5"><hr></th></tr>
+<tr><td valign="top"><img src="/icons/back.gif" alt="[PARENTDIR]"></td><td><a href="/courses/do280/ocp4.6/materials/">Parent Directory</a>       </td><td>&nbsp;</td><td align="right">  - </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="auth-provider.tgz">auth-provider.tgz</a>      </td><td align="right">2021-07-23 17:50  </td><td align="right">293 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="auth-review.tgz">auth-review.tgz</a>        </td><td align="right">2021-07-23 17:50  </td><td align="right">287 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="console-metrics.tgz">console-metrics.tgz</a>    </td><td align="right">2021-07-23 17:50  </td><td align="right">497 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="console-review.tgz">console-review.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">544 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="console-workloads.tgz">console-workloads.tgz</a>  </td><td align="right">2021-07-23 17:50  </td><td align="right">561 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="example-do280.tgz">example-do280.tgz</a>      </td><td align="right">2021-07-23 17:50  </td><td align="right">227 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="execute-cli.tgz">execute-cli.tgz</a>        </td><td align="right">2021-07-23 17:50  </td><td align="right">511 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="execute-review.tgz">execute-review.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">670 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="install-create.tgz">install-create.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">2.0K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="install-prepare.tgz">install-prepare.tgz</a>    </td><td align="right">2021-07-23 17:50  </td><td align="right">1.3K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="install-review.tgz">install-review.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">1.8K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="install-storage.tgz">install-storage.tgz</a>    </td><td align="right">2021-07-23 17:50  </td><td align="right">1.2K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="install-troubleshoot.tgz">install-troubleshoot..&gt;</a></td><td align="right">2021-07-23 17:50  </td><td align="right">837 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="install-verify.tgz">install-verify.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right"> 11K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="monitor-alerts.tgz">monitor-alerts.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">1.1K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="monitor-apps.tgz">monitor-apps.tgz</a>       </td><td align="right">2021-07-23 17:50  </td><td align="right">1.4K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="monitor-metrics.tgz">monitor-metrics.tgz</a>    </td><td align="right">2021-07-23 17:50  </td><td align="right">669 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="monitor-review.tgz">monitor-review.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">909 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="network-ingress.tgz">network-ingress.tgz</a>    </td><td align="right">2021-07-23 17:50  </td><td align="right">1.4K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="network-policy.tgz">network-policy.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">736 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="network-review.tgz">network-review.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">1.4K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="network-sdn.tgz">network-sdn.tgz</a>        </td><td align="right">2021-07-23 17:50  </td><td align="right">926 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="review-template.tgz">review-template.tgz</a>    </td><td align="right">2021-07-23 17:50  </td><td align="right">588 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="review-troubleshoot.tgz">review-troubleshoot.tgz</a></td><td align="right">2021-07-23 17:50  </td><td align="right">1.3K</td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="scale-automatic.tgz">scale-automatic.tgz</a>    </td><td align="right">2021-07-23 17:50  </td><td align="right">857 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="schedule-limit.tgz">schedule-limit.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">754 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="schedule-pods.tgz">schedule-pods.tgz</a>      </td><td align="right">2021-07-23 17:50  </td><td align="right">610 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="schedule-review.tgz">schedule-review.tgz</a>    </td><td align="right">2021-07-23 17:50  </td><td align="right">161 </td><td>&nbsp;</td></tr>
+<tr><td valign="top"><img src="/icons/compressed.gif" alt="[   ]"></td><td><a href="schedule-scale.tgz">schedule-scale.tgz</a>     </td><td align="right">2021-07-23 17:50  </td><td align="right">1.2K</td><td>&nbsp;</td></tr>
+   <tr><th colspan="5"><hr></th></tr>
+</table>
+</body></html>
